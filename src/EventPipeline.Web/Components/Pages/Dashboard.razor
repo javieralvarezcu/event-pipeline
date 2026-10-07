@@ -1,0 +1,229 @@
+@page "/"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@implements IDisposable
+@inject IServiceScopeFactory ScopeFactory
+@inject IJobActivityHub Activity
+
+<h1>Inicio</h1>
+
+@if (_data == null)
+{
+    <p class="muted">Cargando…</p>
+}
+else
+{
+    <div class="cards">
+        <div class="card">
+            <div class="card-value">@_data.EventCount</div>
+            <div class="card-label">Eventos nuestros</div>
+        </div>
+        <div class="card">
+            <div class="card-value">@_data.MuxoCount</div>
+            <div class="card-label">Eventos muxojaleo</div>
+        </div>
+        <div class="card">
+            <div class="card-value">@_data.CrossMatchCount</div>
+            <div class="card-label">Cruces</div>
+        </div>
+        <div class="card">
+            <div class="card-value">@_data.AnalyzedPostCount / @_data.PostCount</div>
+            <div class="card-label">Posts analizados / registrados</div>
+        </div>
+        <div class="card">
+            <div class="card-value">@_data.DeepSeekCallCount</div>
+            <div class="card-label">Llamadas DeepSeek</div>
+        </div>
+        <div class="card">
+            <div class="card-value">@FormatTokens(_data.TotalTokens)</div>
+            <div class="card-label">Tokens consumidos</div>
+        </div>
+    </div>
+
+    <h2>Actividad en tiempo real</h2>
+    <p class="muted">
+        @if (_data.RunningRuns.Count > 0)
+        {
+            <span>@_data.RunningRuns.Count trabajo(s) ejecutando ahora mismo…</span>
+        }
+        else if (_data.EnqueuedCount > 0)
+        {
+            <span>@_data.EnqueuedCount trabajo(s) en cola.</span>
+        }
+        else
+        {
+            <span>Sin trabajos ejecutando ni en cola.</span>
+        }
+    </p>
+
+    @if (_liveLog.Count == 0)
+    {
+        <p class="muted">Sin actividad reciente.</p>
+    }
+    else
+    {
+        <div class="live-log">
+            @foreach (var entry in _liveLog)
+            {
+                <div class="live-log-line">
+                    <span class="live-log-time">@entry.LoggedAtUtc.ToLocalTime().ToString("HH:mm:ss")</span>
+                    <span class="live-log-job">@entry.JobName</span>
+                    <span class="live-log-msg">@entry.Message</span>
+                </div>
+            }
+        </div>
+    }
+
+    <h2>Últimas ejecuciones</h2>
+    @if (_data.LatestRuns.Count == 0)
+    {
+        <p class="muted">Todavía no hay ejecuciones registradas. Visita <a href="/trabajos">Trabajos</a>.</p>
+    }
+    else
+    {
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Job</th>
+                    <th>Disparo</th>
+                    <th>Estado</th>
+                    <th>Inicio</th>
+                    <th>Fin</th>
+                    <th>Duración</th>
+                    <th>Resumen</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var run in _data.LatestRuns)
+                {
+                    <tr>
+                        <td>@run.JobName</td>
+                        <td>@(run.TriggerType == "manual" ? "manual" : "programado")</td>
+                        <td>
+                            <span class="badge @StatusClass(run.Status)">@StatusLabel(run.Status)</span>
+                        </td>
+                        <td>@run.StartedAtUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")</td>
+                        <td>
+                            @(run.CompletedAtUtc.HasValue
+                                ? run.CompletedAtUtc.Value.ToLocalTime().ToString("dd/MM/yyyy HH:mm")
+                                : "—")
+                        </td>
+                        <td>@FormatDuration(run)</td>
+                        <td class="cell-summary">
+                            @if (run.Error != null)
+                            {
+                                <span class="error-text">@run.Error</span>
+                            }
+                            else
+                            {
+                                <span>@(run.SummaryJson ?? "—")</span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+}
+
+@code {
+    private const int MaxLiveLines = 100;
+
+    private DashboardData? _data;
+    private readonly List<JobLogEntry> _liveLog = new();
+    private CancellationTokenSource? _liveCts;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+            return;
+
+        await LoadAsync();
+
+        // Log en vivo: suscripción al broadcast del proceso (sin polling).
+        _liveCts = new CancellationTokenSource();
+        _ = StreamLiveLogAsync(_liveCts.Token);
+    }
+
+    private async Task LoadAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var ui = scope.ServiceProvider.GetRequiredService<UiQueryService>();
+        _data = await ui.GetDashboardAsync();
+
+        // El historial persistido del log actual (por si se recarga la página).
+        foreach (var log in _data.RecentLogs)
+        {
+            _liveLog.Add(new JobLogEntry(log.JobRunId, log.JobName, log.LoggedAtUtc, log.Message));
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task StreamLiveLogAsync(CancellationToken ct)
+    {
+        var (id, reader) = Activity.Subscribe();
+        try
+        {
+            await foreach (var entry in reader.ReadAllAsync(ct))
+            {
+                switch (entry)
+                {
+                    case JobLogEntry log:
+                        _liveLog.Insert(0, log); // más reciente arriba, sin necesidad de scroll
+                        if (_liveLog.Count > MaxLiveLines)
+                            _liveLog.RemoveRange(MaxLiveLines, _liveLog.Count - MaxLiveLines);
+                        break;
+                    case JobRunEvent:
+                        // Un trabajo ha arrancado o terminado: refresca contadores,
+                        // en-cola/en-ejecución e historial sin recargar la página.
+                        await LoadAsync();
+                        break;
+                }
+
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // circuito cerrado
+        }
+        finally
+        {
+            Activity.Unsubscribe(id);
+        }
+    }
+
+    public void Dispose()
+    {
+        _liveCts?.Cancel();
+        _liveCts?.Dispose();
+    }
+
+    private static string FormatTokens(long? tokens) =>
+        tokens == null ? "—" : tokens.Value.ToString("N0");
+
+    private static string FormatDuration(JobRun run)
+    {
+        if (run.CompletedAtUtc == null)
+            return "en curso…";
+
+        var duration = run.CompletedAtUtc.Value - run.StartedAtUtc;
+        return duration.TotalMinutes >= 1
+            ? $"{(int)duration.TotalMinutes} min {duration.Seconds} s"
+            : $"{duration.Seconds} s";
+    }
+
+    private static string StatusClass(string status) => status switch
+    {
+        "Succeeded" => "badge-ok",
+        "Failed" => "badge-error",
+        _ => "badge-running",
+    };
+
+    private static string StatusLabel(string status) => status switch
+    {
+        "Succeeded" => "Correcto",
+        "Failed" => "Fallido",
+        _ => "En curso",
+    };
+}

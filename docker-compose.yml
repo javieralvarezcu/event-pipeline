@@ -1,0 +1,65 @@
+# Producción: SQL Server propio + API REST + WebUI (Blazor/Hangfire) + túnel cloudflared.
+# La BD (EventPipelineDb) la crean y migran las migraciones EF al arrancar la Web.
+# cloudflared enruta por path (configurado en el dashboard de Cloudflare):
+#   /            -> web:8083   (la UI de gestión)
+#   /api/*       -> api:8082   (la API REST)
+#   /swagger*    -> api:8082
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      # Express es gratuito y de sobra para esta app; cambiar a Standard si se licencia.
+      MSSQL_PID: Express
+      SA_PASSWORD: ${SA_PASSWORD:?define SA_PASSWORD en .env}
+    volumes:
+      - sqlserver-data:/var/opt/mssql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$SA_PASSWORD\" -C -Q 'SELECT 1' -b -o /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  api:
+    build:
+      context: .
+      dockerfile: src/EventPipeline.Api/Dockerfile
+    ports:
+      - "8082:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__DefaultConnection: "Server=sqlserver,1433;Database=EventPipelineDb;User Id=sa;Password=${SA_PASSWORD};TrustServerCertificate=true"
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: src/EventPipeline.Web/Dockerfile
+    ports:
+      - "8083:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__DefaultConnection: "Server=sqlserver,1433;Database=EventPipelineDb;User Id=sa;Password=${SA_PASSWORD};TrustServerCertificate=true"
+      # La Web crea la BD y aplica las migraciones al arrancar (BD propia: seguro;
+      # la Api no migra para no competir con ella en el arranque).
+      Database__MigrateOnStartup: "true"
+      # Web UI administrator seeded on first boot (password forced to change on first login).
+      Auth__AdminUsername: ${ADMIN_USERNAME:-admin}
+      Auth__InitialAdminPassword: ${INITIAL_ADMIN_PASSWORD:?define INITIAL_ADMIN_PASSWORD en .env}
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TUNNEL_TOKEN}
+    restart: unless-stopped
+
+volumes:
+  sqlserver-data:

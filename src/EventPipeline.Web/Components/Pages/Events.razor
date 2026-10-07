@@ -1,0 +1,125 @@
+@page "/eventos"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@inject IServiceScopeFactory ScopeFactory
+
+<h1>Eventos</h1>
+
+@if (_events == null)
+{
+    <p class="muted">Cargando…</p>
+}
+else if (_events.Count == 0)
+{
+    <p class="muted">No hay eventos guardados todavía. Ejecuta el scrape de Instagram o añade cuentas en <a href="/cuentas">Cuentas IG</a>.</p>
+}
+else
+{
+    <p class="muted">
+        @_events.Count eventos. Los cruzados con muxojaleo.com aparecen en verde; los
+        excluidos siguen en esta lista pero no salen en el calendario.
+    </p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Título</th>
+                <th>Fecha</th>
+                <th>Cuenta</th>
+                <th>Recurrencia</th>
+                <th>Cruzado</th>
+                <th>Calendario</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var e in _events)
+            {
+                <tr class="@(e.IsCrossed ? "row-crossed" : null) @(e.Excluded ? "row-excluded" : null)">
+                    <td>
+                        @(string.IsNullOrEmpty(e.Title) ? "Sin título" : e.Title)
+                        @if (!string.IsNullOrEmpty(e.Url))
+                        {
+                            <a href="@e.Url" target="_blank" rel="noopener" title="Ver post">↗</a>
+                        }
+                    </td>
+                    <td>@FormatEffectiveDate(e)</td>
+                    <td>@(string.IsNullOrEmpty(e.Account) ? "—" : e.Account)</td>
+                    <td>@CalendarEventMapper.FormatRecurrence(e)</td>
+                    <td>
+                        @if (e.IsCrossed)
+                        {
+                            <span class="badge badge-ok">cruzado</span>
+                        }
+                        else
+                        {
+                            <span class="badge">sin cruzar</span>
+                        }
+                    </td>
+                    <td>
+                        @if (e.Excluded)
+                        {
+                            <span class="badge">excluido</span>
+                        }
+                        else
+                        {
+                            <span class="badge badge-ok">visible</span>
+                        }
+                    </td>
+                    <td class="row-actions">
+                        <button class="secondary" @onclick="() => _modalEvent = e">Ver / editar</button>
+                        <button class="secondary" @onclick="() => ToggleExcludedAsync(e)">
+                            @(e.Excluded ? "Volver a incluir" : "Excluir")
+                        </button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@if (_modalEvent != null)
+{
+    <EventModal Event="_modalEvent"
+                OnSaved="AfterMutationAsync"
+                OnDeleted="AfterMutationAsync"
+                OnClose="() => _modalEvent = null" />
+}
+
+@code {
+    private List<EventDetailResponse>? _events;
+    private EventDetailResponse? _modalEvent;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+            await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var query = scope.ServiceProvider.GetRequiredService<IEventQueryService>();
+        _events = await query.GetAllAsync(includeExcluded: true);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task ToggleExcludedAsync(EventDetailResponse e)
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var crud = scope.ServiceProvider.GetRequiredService<IEventCrudService>();
+        await crud.SetExcludedAsync(e.EventUniqueId, !e.Excluded);
+        await LoadAsync();
+    }
+
+    private async Task AfterMutationAsync()
+    {
+        _modalEvent = null;
+        await LoadAsync();
+    }
+
+    private static string FormatEffectiveDate(EventDetailResponse e)
+    {
+        var date = CalendarEventMapper.ToDateOnly(e.EventDate)
+            ?? CalendarEventMapper.ToDateOnly(e.RecurrenceStartDate);
+        return date != null ? CalendarEventMapper.FormatDateOnly(date) : "Sin fecha";
+    }
+}

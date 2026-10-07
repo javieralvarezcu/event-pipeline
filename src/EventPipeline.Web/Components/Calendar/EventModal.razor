@@ -1,0 +1,394 @@
+@inject IServiceScopeFactory ScopeFactory
+
+@if (Event != null)
+{
+    <div class="modal-overlay" @onclick="OnOverlayClick">
+        <div class="modal" @onclick:stopPropagation="true">
+            <button class="modal-close" @onclick="CloseAsync">×</button>
+
+            @if (!_editing)
+            {
+                <h2>
+                    @(string.IsNullOrEmpty(Event.Title) ? "Sin título" : Event.Title)
+                    @if (Event.Excluded)
+                    {
+                        <span class="badge">excluido del calendario</span>
+                    }
+                </h2>
+                <p class="modal-summary">@(string.IsNullOrEmpty(Event.Summary) ? "—" : Event.Summary)</p>
+                <dl class="modal-fields">
+                    <dt>Fecha</dt>
+                    <dd>@FormatMainDate()</dd>
+                    @if (HasTime())
+                    {
+                        <dt>Hora</dt>
+                        <dd>@(Event!.EventDate!.Value.ToString("HH:mm"))</dd>
+                    }
+                    <dt>Descripción de fecha</dt>
+                    <dd>@(Event.EventDateDescription ?? "—")</dd>
+                    <dt>Cuenta</dt>
+                    <dd>@(string.IsNullOrEmpty(Event.Account) ? "—" : Event.Account)</dd>
+                    <dt>Recurrencia</dt>
+                    <dd>@CalendarEventMapper.FormatRecurrence(Event)</dd>
+                    <dt>Fecha del post</dt>
+                    <dd>@(Event.PostDatetime?.ToLocalTime().ToString("d 'de' MMMM 'de' yyyy, HH:mm") ?? "—")</dd>
+                    @if (Event.IsCrossed)
+                    {
+                        <dt>En muxojaleo.com</dt>
+                        <dd>@FormatMuxoRow()</dd>
+                    }
+                </dl>
+
+                @if (!string.IsNullOrEmpty(Event.Url))
+                {
+                    <p><a href="@Event.Url" target="_blank" rel="noopener">Ver post en Instagram ↗</a></p>
+                }
+
+                @if (!string.IsNullOrEmpty(Event.ImageUrl))
+                {
+                    <img class="modal-image" src="@Event.ImageUrl" alt="Imagen del post"
+                         onerror="this.classList.add('hidden'); this.nextElementSibling.classList.remove('hidden')" />
+                    <div class="modal-image-fallback hidden">Imagen no disponible</div>
+                }
+
+                @if (!string.IsNullOrEmpty(Event.Caption))
+                {
+                    <h3>Caption</h3>
+                    <p class="modal-caption">@Event.Caption</p>
+                }
+
+                @if (_actionError != null)
+                {
+                    <p class="error-text">@_actionError</p>
+                }
+
+                <div class="modal-actions">
+                    <button class="secondary" @onclick="StartEditing">Editar</button>
+                    <button class="secondary" disabled="@_togglingExcluded" @onclick="ToggleExcludedAsync">
+                        @(Event.Excluded ? "Volver a incluir en el calendario" : "Excluir del calendario")
+                    </button>
+                    <button class="danger @(_deleteArmed ? "confirm" : "")" @onclick="DeleteAsync">
+                        @(_deleteArmed ? "¿Seguro? Pulsa de nuevo" : "Borrar")
+                    </button>
+                </div>
+            }
+            else
+            {
+                <h2>Editar evento</h2>
+                <div class="form-grid">
+                    <label>
+                        Título
+                        <input @bind="_edit.Title" />
+                    </label>
+                    <label>
+                        Resumen
+                        <textarea rows="3" @bind="_edit.Summary"></textarea>
+                    </label>
+                    <label>
+                        Fecha
+                        <input type="date" @bind="_edit.Date" />
+                    </label>
+                    <label>
+                        Descripción de la fecha
+                        <input @bind="_edit.DateDescription" />
+                    </label>
+                    <label class="checkbox">
+                        <input type="checkbox" @bind="_edit.IsRecurrent" />
+                        Evento recurrente
+                    </label>
+                    @if (_edit.IsRecurrent)
+                    {
+                        <label>
+                            Tipo de recurrencia
+                            <select @bind="_edit.RecurrenceType">
+                                <option value="weekly">Semanal</option>
+                                <option value="daily">Diario (tramo de fechas)</option>
+                            </select>
+                        </label>
+                        @if (_edit.RecurrenceType == "weekly")
+                        {
+                            <div class="day-checks">
+                                @for (var n = 1; n <= 7; n++)
+                                {
+                                    <label class="checkbox day-check">
+                                        <input type="checkbox" checked="@_edit.Days.Contains(n)"
+                                               @onchange="(e) => ToggleDay(n, (bool)e.Value!)" />
+                                        @CalendarEventMapper.DayNames[n - 1]
+                                    </label>
+                                }
+                            </div>
+                        }
+                        <label>
+                            Inicio de recurrencia
+                            <input type="date" @bind="_edit.RecurrenceStart" />
+                        </label>
+                        <label>
+                            Fin de recurrencia
+                            <input type="date" @bind="_edit.RecurrenceEnd" />
+                        </label>
+                    }
+                    <label>
+                        URL del post
+                        <input @bind="_edit.Url" />
+                    </label>
+                    <label>
+                        URL de la imagen
+                        <input @bind="_edit.ImageUrl" />
+                    </label>
+                    <label>
+                        Caption
+                        <textarea rows="3" @bind="_edit.Caption"></textarea>
+                    </label>
+                </div>
+
+                @if (_editError != null)
+                {
+                    <p class="error-text">@_editError</p>
+                }
+
+                <div class="modal-actions">
+                    <button class="secondary" @onclick="CancelEdit">Cancelar</button>
+                    <button class="primary" disabled="@_saving" @onclick="SaveAsync">
+                        @(_saving ? "Guardando…" : "Guardar")
+                    </button>
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter]
+    public EventDetailResponse? Event { get; set; }
+
+    [Parameter]
+    public EventCallback OnSaved { get; set; }
+
+    [Parameter]
+    public EventCallback OnDeleted { get; set; }
+
+    [Parameter]
+    public EventCallback OnClose { get; set; }
+
+    private bool _editing;
+    private bool _saving;
+    private bool _deleteArmed;
+    private bool _togglingExcluded;
+    private string? _actionError;
+    private string? _editError;
+    private EditState _edit = new();
+
+    private sealed class EditState
+    {
+        public string Title { get; set; } = string.Empty;
+        public string Summary { get; set; } = string.Empty;
+        public DateTime? Date { get; set; }
+        public string DateDescription { get; set; } = string.Empty;
+        public bool IsRecurrent { get; set; }
+        public string RecurrenceType { get; set; } = "weekly";
+        public List<int> Days { get; set; } = new();
+        public DateTime? RecurrenceStart { get; set; }
+        public DateTime? RecurrenceEnd { get; set; }
+        public string Url { get; set; } = string.Empty;
+        public string ImageUrl { get; set; } = string.Empty;
+        public string Caption { get; set; } = string.Empty;
+    }
+
+    private string FormatMainDate()
+    {
+        var dateOnly = CalendarEventMapper.ToDateOnly(Event!.EventDate)
+            ?? CalendarEventMapper.ToDateOnly(Event.RecurrenceStartDate);
+        return dateOnly != null ? CalendarEventMapper.FormatDateOnly(dateOnly) : "—";
+    }
+
+    private bool HasTime() =>
+        Event?.EventDate is { } d && d.TimeOfDay != TimeSpan.Zero;
+
+    private string FormatMuxoRow()
+    {
+        var parts = new List<string> { Event!.MuxoTitle ?? "Evento de muxojaleo" };
+        if (Event.MuxoDate != null)
+            parts.Add(CalendarEventMapper.FormatDateOnly(CalendarEventMapper.ToDateOnly(Event.MuxoDate)!));
+        return string.Join(" — ", parts);
+    }
+
+    private async Task CloseAsync()
+    {
+        _deleteArmed = false;
+        _editing = false;
+        _actionError = null;
+        await OnClose.InvokeAsync();
+    }
+
+    private async Task OnOverlayClick()
+    {
+        await CloseAsync();
+    }
+
+    private void StartEditing()
+    {
+        _editing = true;
+        _editError = null;
+        _actionError = null;
+        var e = Event!;
+        _edit = new EditState
+        {
+            Title = e.Title,
+            Summary = e.Summary,
+            Date = e.EventDate,
+            DateDescription = e.EventDateDescription ?? string.Empty,
+            IsRecurrent = e.IsRecurrent,
+            RecurrenceType = e.RecurrenceType == "daily" ? "daily" : "weekly",
+            Days = (e.RecurrenceDaysOfWeek ?? string.Empty)
+                .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => int.TryParse(s.Trim(), out var n) ? n : 0)
+                .Where(n => n >= 1 && n <= 7)
+                .ToList(),
+            RecurrenceStart = e.RecurrenceStartDate,
+            RecurrenceEnd = e.RecurrenceEndDate,
+            Url = e.Url,
+            ImageUrl = e.ImageUrl ?? string.Empty,
+            Caption = e.Caption,
+        };
+    }
+
+    private void CancelEdit()
+    {
+        _editing = false;
+        _editError = null;
+    }
+
+    private void ToggleDay(int day, bool enabled)
+    {
+        if (enabled && !_edit.Days.Contains(day))
+            _edit.Days.Add(day);
+        else if (!enabled)
+            _edit.Days.Remove(day);
+    }
+
+    private async Task SaveAsync()
+    {
+        var e = Event!;
+        _saving = true;
+        _editError = null;
+
+        // La edición solo cambia el DÍA: se conserva la hora original del evento.
+        var timePart = e.EventDate != null ? e.EventDate.Value.ToString("HH:mm:ss") : "00:00:00";
+
+        var payload = new UpdateEventRequest
+        {
+            Title = _edit.Title.Trim(),
+            Summary = _edit.Summary.Trim(),
+            EventDate = CombineDate(_edit.Date, timePart),
+            EventDateDescription = NullIfEmpty(_edit.DateDescription),
+            IsRecurrent = _edit.IsRecurrent,
+            RecurrenceType = _edit.IsRecurrent ? _edit.RecurrenceType : null,
+            RecurrenceDaysOfWeek = _edit.IsRecurrent && _edit.Days.Count > 0
+                ? string.Join(",", _edit.Days.OrderBy(d => d))
+                : null,
+            RecurrenceStartDate = _edit.IsRecurrent ? _edit.RecurrenceStart : null,
+            RecurrenceEndDate = _edit.IsRecurrent ? _edit.RecurrenceEnd : null,
+            Url = NullIfEmpty(_edit.Url),
+            ImageUrl = NullIfEmpty(_edit.ImageUrl),
+            Caption = string.IsNullOrEmpty(_edit.Caption) ? null : _edit.Caption,
+        };
+
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var crud = scope.ServiceProvider.GetRequiredService<IEventCrudService>();
+            var updated = await crud.UpdateAsync(e.EventUniqueId, payload);
+            if (updated == null)
+            {
+                _editError = "El evento ya no existe.";
+                return;
+            }
+
+            Event = updated;
+            _editing = false;
+            await OnSaved.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            _editError = $"No se pudo guardar: {ex.Message}";
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task ToggleExcludedAsync()
+    {
+        var e = Event!;
+        _togglingExcluded = true;
+        _actionError = null;
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var crud = scope.ServiceProvider.GetRequiredService<IEventCrudService>();
+            var updated = await crud.SetExcludedAsync(e.EventUniqueId, !e.Excluded);
+            if (updated == null)
+            {
+                _actionError = "El evento ya no existe.";
+                return;
+            }
+
+            Event = updated;
+            await OnSaved.InvokeAsync(); // refresca la vista que abrió el modal
+        }
+        catch (Exception ex)
+        {
+            _actionError = $"No se pudo actualizar: {ex.Message}";
+        }
+        finally
+        {
+            _togglingExcluded = false;
+        }
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (!_deleteArmed)
+        {
+            _deleteArmed = true;
+            _actionError = null;
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(8000);
+                _deleteArmed = false;
+                await InvokeAsync(StateHasChanged);
+            });
+            return;
+        }
+
+        _deleteArmed = false;
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var crud = scope.ServiceProvider.GetRequiredService<IEventCrudService>();
+            var deleted = await crud.DeleteAsync(Event!.EventUniqueId);
+            if (!deleted)
+            {
+                _actionError = "El evento ya no existe.";
+                return;
+            }
+
+            _editing = false;
+            await OnDeleted.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            _actionError = $"No se pudo borrar: {ex.Message}";
+        }
+    }
+
+    /// <summary>Conserva el día editado y la hora original del evento.</summary>
+    private static DateTime? CombineDate(DateTime? date, string timePart) =>
+        date.HasValue
+            ? DateTime.SpecifyKind(date.Value.Date + TimeSpan.Parse(timePart), DateTimeKind.Unspecified)
+            : null;
+
+    private static string? NullIfEmpty(string value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+}

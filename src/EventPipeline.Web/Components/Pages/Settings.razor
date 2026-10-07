@@ -1,0 +1,251 @@
+@page "/ajustes"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@inject IServiceScopeFactory ScopeFactory
+
+<h1>Ajustes</h1>
+
+@if (_mustChangePassword)
+{
+    <div class="error-banner">
+        <p>Debes cambiar la contraseña inicial antes de seguir usando la aplicación.</p>
+    </div>
+}
+
+@if (_message != null)
+{
+    <p class="@(_messageOk ? "ok-text" : "error-text")">@_message</p>
+}
+
+<section class="settings-section">
+    <h2>Claves</h2>
+    <p class="muted">
+        Las claves se guardan cifradas en la base de datos y las usan las ejecuciones programadas.
+        Nunca se muestran una vez guardadas.
+    </p>
+
+    <form class="settings-form" @onsubmit="SaveDeepSeekKeyAsync">
+        <label>
+            API key de DeepSeek — estado: <strong>@(_deepSeekConfigured == null ? "…" : _deepSeekConfigured == true ? "configurada" : "no configurada")</strong>
+            <input type="password" autocomplete="off" placeholder="sk-…" @bind="_deepSeekKey" />
+        </label>
+        <div class="row-actions">
+            <button type="submit" class="primary" disabled="@_saving">Guardar key</button>
+            <button type="button" class="danger" disabled="@_saving" @onclick="ClearDeepSeekKeyAsync">Borrar key</button>
+        </div>
+    </form>
+
+    <form class="settings-form" @onsubmit="SaveBrightDataTokenAsync">
+        <label>
+            Token de Bright Data — estado: <strong>@(_brightDataConfigured == null ? "…" : _brightDataConfigured == true ? "configurado" : "no configurado")</strong>
+            <input type="password" autocomplete="off" placeholder="Token de la API de Bright Data" @bind="_brightDataToken" />
+        </label>
+        <div class="row-actions">
+            <button type="submit" class="primary" disabled="@_saving">Guardar token</button>
+            <button type="button" class="danger" disabled="@_saving" @onclick="ClearBrightDataTokenAsync">Borrar token</button>
+        </div>
+    </form>
+</section>
+
+<section class="settings-section">
+    <h2>Scrape de Instagram (avanzado)</h2>
+    <form class="settings-form" @onsubmit="SaveAdvancedAsync">
+        <label>
+            URL base de Bright Data
+            <input @bind="_brightDataBaseUrl" />
+        </label>
+        <label>
+            Dataset de Bright Data
+            <input @bind="_brightDataDatasetId" />
+        </label>
+        <label>
+            Posts recientes por cuenta
+            <input type="number" min="1" max="20" @bind="_postsPerAccount" />
+        </label>
+        <div class="row-actions">
+            <button type="submit" class="primary" disabled="@_saving">Guardar</button>
+        </div>
+    </form>
+</section>
+
+<section class="settings-section">
+    <h2>Contraseña</h2>
+    <form class="settings-form" @onsubmit="ChangePasswordAsync">
+        <label>
+            Contraseña actual
+            <input type="password" autocomplete="current-password" @bind="_currentPassword" />
+        </label>
+        <label>
+            Nueva contraseña (mínimo 12 caracteres)
+            <input type="password" autocomplete="new-password" @bind="_newPassword" />
+        </label>
+        <div class="row-actions">
+            <button type="submit" class="primary" disabled="@_saving">Cambiar contraseña</button>
+        </div>
+    </form>
+</section>
+
+@code {
+    private string _deepSeekKey = string.Empty;
+    private string _brightDataToken = string.Empty;
+    private string _brightDataBaseUrl = string.Empty;
+    private string _brightDataDatasetId = string.Empty;
+    private string _postsPerAccount = "4";
+    private string _currentPassword = string.Empty;
+    private string _newPassword = string.Empty;
+    private bool? _deepSeekConfigured;
+    private bool? _brightDataConfigured;
+    private bool _mustChangePassword;
+    private bool _saving;
+    private bool _messageOk;
+    private string? _message;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+            await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var settings = scope.ServiceProvider.GetRequiredService<ISettingsService>();
+
+        _deepSeekConfigured = await settings.GetSecretAsync(SettingsKeys.DeepSeekApiKey) != null;
+        _brightDataConfigured = await settings.GetSecretAsync(SettingsKeys.BrightDataToken) != null;
+        _brightDataBaseUrl = await settings.GetPlainAsync(SettingsKeys.BrightDataBaseUrl)
+            ?? SettingsKeys.DefaultBrightDataBaseUrl;
+        _brightDataDatasetId = await settings.GetPlainAsync(SettingsKeys.BrightDataDatasetId)
+            ?? SettingsKeys.DefaultBrightDataDatasetId;
+        _postsPerAccount = await settings.GetPlainAsync(SettingsKeys.IgPostsPerAccount)
+            ?? SettingsKeys.DefaultIgPostsPerAccount;
+
+        var auth = scope.ServiceProvider.GetRequiredService<AuthService>();
+        var username = await GetUsernameAsync();
+        var user = username != null ? await auth.GetAsync(username) : null;
+        _mustChangePassword = user?.MustChangePassword == true;
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task<string?> GetUsernameAsync()
+    {
+        // El AuthController pone el username en la claim Name de la cookie.
+        var state = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        return state.User.Identity?.Name;
+    }
+
+    [Inject]
+    private AuthenticationStateProvider AuthenticationStateProvider { get; set; } = default!;
+
+    private async Task SaveDeepSeekKeyAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(_deepSeekKey))
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var settings = scope.ServiceProvider.GetRequiredService<ISettingsService>();
+            await settings.SetSecretAsync(SettingsKeys.DeepSeekApiKey, _deepSeekKey.Trim());
+            SetMessage(true, "API key de DeepSeek guardada.");
+        }
+
+        _deepSeekKey = string.Empty;
+        await LoadAsync();
+    }
+
+    private async Task ClearDeepSeekKeyAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var settings = scope.ServiceProvider.GetRequiredService<ISettingsService>();
+        await settings.SetSecretAsync(SettingsKeys.DeepSeekApiKey, string.Empty);
+        SetMessage(true, "API key de DeepSeek borrada.");
+        await LoadAsync();
+    }
+
+    private async Task SaveBrightDataTokenAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(_brightDataToken))
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var settings = scope.ServiceProvider.GetRequiredService<ISettingsService>();
+            await settings.SetSecretAsync(SettingsKeys.BrightDataToken, _brightDataToken.Trim());
+            SetMessage(true, "Token de Bright Data guardado.");
+        }
+
+        _brightDataToken = string.Empty;
+        await LoadAsync();
+    }
+
+    private async Task ClearBrightDataTokenAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var settings = scope.ServiceProvider.GetRequiredService<ISettingsService>();
+        await settings.SetSecretAsync(SettingsKeys.BrightDataToken, string.Empty);
+        SetMessage(true, "Token de Bright Data borrado.");
+        await LoadAsync();
+    }
+
+    private async Task SaveAdvancedAsync()
+    {
+        _saving = true;
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var settings = scope.ServiceProvider.GetRequiredService<ISettingsService>();
+
+            if (!Uri.TryCreate(_brightDataBaseUrl, UriKind.Absolute, out var uri)
+                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            {
+                SetMessage(false, "La URL base de Bright Data debe ser una URL http(s) válida.");
+                return;
+            }
+            if (!int.TryParse(_postsPerAccount, out var posts) || posts < 1 || posts > 20)
+            {
+                SetMessage(false, "Posts por cuenta debe ser un número entre 1 y 20.");
+                return;
+            }
+
+            await settings.SetPlainAsync(SettingsKeys.BrightDataBaseUrl, _brightDataBaseUrl.Trim());
+            await settings.SetPlainAsync(SettingsKeys.BrightDataDatasetId, _brightDataDatasetId.Trim());
+            await settings.SetPlainAsync(SettingsKeys.IgPostsPerAccount, posts.ToString());
+            SetMessage(true, "Ajustes de scrape guardados.");
+            await LoadAsync();
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task ChangePasswordAsync()
+    {
+        _saving = true;
+        try
+        {
+            var username = await GetUsernameAsync();
+            if (username == null)
+            {
+                SetMessage(false, "No se pudo identificar al usuario.");
+                return;
+            }
+
+            using var scope = ScopeFactory.CreateScope();
+            var auth = scope.ServiceProvider.GetRequiredService<AuthService>();
+            var changed = await auth.ChangePasswordAsync(username, _currentPassword, _newPassword);
+            SetMessage(changed,
+                changed ? "Contraseña cambiada." : "La contraseña actual no es correcta o la nueva es demasiado corta (mínimo 12).");
+
+            _currentPassword = string.Empty;
+            _newPassword = string.Empty;
+            await LoadAsync();
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private void SetMessage(bool ok, string text)
+    {
+        _messageOk = ok;
+        _message = text;
+    }
+}

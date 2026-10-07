@@ -1,0 +1,412 @@
+@page "/calendario"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@implements IAsyncDisposable
+@inject IServiceScopeFactory ScopeFactory
+@inject IJSRuntime Js
+
+<h1>Calendario</h1>
+
+@if (_error != null)
+{
+    <div class="error-banner">
+        <p>@_error</p>
+        <button class="secondary" @onclick="LoadAsync">Reintentar</button>
+    </div>
+}
+
+<div class="calendar-toolbar">
+    <label class="checkbox">
+        <input type="checkbox" checked="@_showCrossed" @onchange="OnShowCrossedChanged" />
+        Mostrar eventos cruzados
+    </label>
+    <label class="checkbox">
+        <input type="checkbox" checked="@_showMuxo" @onchange="OnShowMuxoChanged" />
+        Mostrar eventos de muxojaleo
+    </label>
+    <span class="legend">
+        <span class="legend-item"><span class="legend-dot legend-green"></span> cruzado</span>
+        <span class="legend-item"><span class="legend-dot legend-purple"></span> solo muxojaleo</span>
+    </span>
+    <a class="button secondary" href="/api/calendar/ics">Descargar ICS</a>
+</div>
+
+<div class="calendar-actions">
+    <div class="action-group">
+        <button class="danger @(_cleanupArmed ? "confirm" : "")"
+                disabled="@_busy" @onclick="OnCleanupClick">
+            @(_busy ? "Trabajando…" : _cleanupArmed ? "¿Seguro? Pulsa de nuevo" : "Limpiar mes")
+        </button>
+    </div>
+    <div class="action-group">
+        <button class="secondary @(_crosscheckArmed ? "confirm" : "")"
+                disabled="@_busy" @onclick="OnCrossCheckClick">
+            @(_busy ? "Trabajando…" : _crosscheckArmed ? "¿Seguro? Pulsa de nuevo" : "Cruzar con muxojaleo")
+        </button>
+    </div>
+</div>
+
+@if (_actionTitle != null)
+{
+    <div class="action-result @(_actionOk ? "result-ok" : "result-error")">
+        <p>@_actionTitle</p>
+        @if (_actionLines.Count > 0)
+        {
+            <ul>
+                @foreach (var line in _actionLines)
+                {
+                    <li>@line</li>
+                }
+            </ul>
+        }
+    </div>
+}
+
+<div id="calendar" class="calendar"></div>
+
+<h2>Eventos sin fecha</h2>
+@if (_noDateEvents.Count == 0)
+{
+    <p class="muted">No hay eventos sin fecha.</p>
+}
+else
+{
+    <ul class="no-date-list">
+        @foreach (var e in _noDateEvents)
+        {
+            <li class="no-date-item" @onclick="() => OpenEventModal(e)">
+                <div class="no-date-title">@(string.IsNullOrEmpty(e.Title) ? "Sin título" : e.Title)</div>
+                <p class="no-date-summary">@e.Summary</p>
+            </li>
+        }
+    </ul>
+}
+
+@if (_modalEvent != null)
+{
+    <EventModal Event="_modalEvent"
+                OnSaved="AfterMutationAsync"
+                OnDeleted="AfterMutationAsync"
+                OnClose="CloseModalAsync" />
+}
+
+@if (_modalMuxo != null)
+{
+    <div class="modal-overlay" @onclick="CloseModalAsync">
+        <div class="modal" @onclick:stopPropagation="true">
+            <button class="modal-close" @onclick="CloseModalAsync">×</button>
+            <h2>@(string.IsNullOrEmpty(_modalMuxo.Title) ? "Sin título" : _modalMuxo.Title)</h2>
+            <p class="modal-summary">
+                @string.Join(" · ", new[] { _modalMuxo.Categories, _modalMuxo.Price }.Where(s => !string.IsNullOrEmpty(s)))
+            </p>
+            <dl class="modal-fields">
+                <dt>Fecha</dt>
+                <dd>@(CalendarEventMapper.ToDateOnly(_modalMuxo.Date) is { } d ? CalendarEventMapper.FormatDateOnly(d) : "—")</dd>
+                <dt>Lugar</dt>
+                <dd>@(_modalMuxo.Venue ?? "—")</dd>
+            </dl>
+            @if (!string.IsNullOrEmpty(_modalMuxo.Link))
+            {
+                <p><a href="@_modalMuxo.Link" target="_blank" rel="noopener">Ver en muxojaleo.com ↗</a></p>
+            }
+            <p class="muted">Este evento solo existe en muxojaleo.com y aún no está cruzado con ninguno nuestro.</p>
+        </div>
+    </div>
+}
+
+@code {
+    private List<EventDetailResponse> _events = new();
+    private List<MuxoEventDto> _muxoEvents = new();
+    private List<EventDetailResponse> _noDateEvents = new();
+    private bool _showCrossed = true;
+    private bool _showMuxo = true;
+    private string? _currentMonth;
+    private string? _error;
+    private bool _busy;
+    private bool _cleanupArmed;
+    private bool _crosscheckArmed;
+    private bool _actionOk;
+    private string? _actionTitle;
+    private List<string> _actionLines = new();
+    private EventDetailResponse? _modalEvent;
+    private MuxoEventDto? _modalMuxo;
+    private DotNetObjectReference<Calendar>? _jsRef;
+
+    private static readonly JsonSerializerOptions CamelCaseJson = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+    };
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            // El DotNetObjectReference debe existir ANTES de la primera renderización:
+            // los callbacks de FullCalendar (datesSet) lo usan en cuanto se pinta.
+            _jsRef ??= DotNetObjectReference.Create(this);
+            await LoadAsync();
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        _error = null;
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var eventsQuery = scope.ServiceProvider.GetRequiredService<IEventQueryService>();
+            var muxoQuery = scope.ServiceProvider.GetRequiredService<IMuxoQueryService>();
+            _events = await eventsQuery.GetAllAsync();
+            // Los eventos de muxojaleo son opcionales: si fallan, el panel sigue funcionando.
+            try
+            {
+                _muxoEvents = await muxoQuery.GetAllAsync();
+            }
+            catch
+            {
+                _muxoEvents = new List<MuxoEventDto>();
+            }
+
+            _noDateEvents = _events.Where(e => CalendarEventMapper.BuildCalendarEvent(e) == null).ToList();
+        }
+        catch
+        {
+            _error = "No se pudieron cargar los eventos. Comprueba que la API está en marcha.";
+            return;
+        }
+
+        await RenderCalendarAsync();
+    }
+
+    private async Task RenderCalendarAsync()
+    {
+        var ours = (_showCrossed ? _events : _events.Where(e => !e.IsCrossed))
+            .Select(CalendarEventMapper.BuildCalendarEvent);
+        var muxo = _showMuxo
+            ? _muxoEvents.Where(m => !m.IsCrossed).Select(CalendarEventMapper.BuildMuxoCalendarEvent)
+            : Enumerable.Empty<CalendarEventDto?>();
+
+        var all = ours.Concat(muxo).Where(e => e != null).Select(e => e!).ToList();
+        var json = JsonSerializer.Serialize(all, CamelCaseJson);
+
+        var rendered = await Js.InvokeAsync<bool>("calendarInterop.render", "calendar", json, _jsRef);
+        if (!rendered)
+            _error = "No se pudo cargar la librería del calendario (se necesita acceso a Internet).";
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task OnShowCrossedChanged(ChangeEventArgs e)
+    {
+        _showCrossed = (bool)e.Value!;
+        await RenderCalendarAsync();
+    }
+
+    private async Task OnShowMuxoChanged(ChangeEventArgs e)
+    {
+        _showMuxo = (bool)e.Value!;
+        await RenderCalendarAsync();
+    }
+
+    /// <summary>Invocado desde JS en cada datesSet: mes visible "YYYY-MM".</summary>
+    [JSInvokable]
+    public Task OnMonthChanged(string currentMonth)
+    {
+        _currentMonth = currentMonth;
+        return Task.CompletedTask;
+    }
+
+    /// <summary>Invocado desde JS al hacer clic en un evento del calendario.</summary>
+    [JSInvokable]
+    public async Task OnEventClick(string kind, string key)
+    {
+        if (kind == "muxo")
+        {
+            _modalMuxo = _muxoEvents.FirstOrDefault(m => m.ExternalId == key);
+        }
+        else
+        {
+            _modalEvent = _events.FirstOrDefault(e => e.EventUniqueId == key);
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private void OpenEventModal(EventDetailResponse e) => _modalEvent = e;
+
+    private async Task CloseModalAsync()
+    {
+        _modalEvent = null;
+        _modalMuxo = null;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task AfterMutationAsync()
+    {
+        _modalEvent = null;
+        await LoadAsync();
+    }
+
+    // --- Limpieza del mes (dos pasos, como en el panel antiguo) ---
+
+    private async Task OnCleanupClick()
+    {
+        if (_busy)
+            return;
+
+        if (_currentMonth == null)
+        {
+            ShowActionResult(false, "No se pudo determinar el mes visible del calendario.");
+            return;
+        }
+
+        if (!_cleanupArmed)
+        {
+            _cleanupArmed = true;
+            var monthLabel = MonthLabel(_currentMonth);
+            ShowActionResult(true,
+                $"Se analizará {monthLabel} (más los eventos sin fecha) y se eliminarán los duplicados. " +
+                "Pulsa otra vez el botón para confirmar.");
+            _ = DisarmAfterAsync(8000, () => _cleanupArmed = false);
+            return;
+        }
+
+        _cleanupArmed = false;
+        _busy = true;
+        var parts = _currentMonth.Split('-');
+        var year = int.Parse(parts[0]);
+        var month = int.Parse(parts[1]);
+        ShowActionResult(true, "Analizando con el LLM…");
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var cleanup = scope.ServiceProvider.GetRequiredService<ICleanupService>();
+            var key = await GetDeepSeekKeyAsync(scope)
+                ?? throw new InvalidOperationException(
+                    "Configura la API key de DeepSeek en Ajustes antes de limpiar el mes.");
+            var result = await cleanup.CleanupMonthAsync(year, month, key);
+
+            var lines = new List<string>();
+            if (result.DeletedCount == 0)
+                lines.Add("El LLM no encontró duplicados entre los eventos analizados.");
+            foreach (var group in result.Groups)
+            {
+                var removed = string.Join(", ", group.Removed.Select(r =>
+                    $"«{r.Title ?? r.EventUniqueId}» (@{r.Account ?? "cuenta desconocida"})"));
+                lines.Add($"Se conserva «{group.KeepTitle ?? group.KeepEventId}»; eliminados: {removed}" +
+                          (group.Reason != null ? $" — {group.Reason}" : string.Empty));
+            }
+
+            ShowActionResult(true,
+                $"Limpieza de {MonthLabel(_currentMonth)}: {result.EventsAnalyzed} eventos analizados, " +
+                $"{result.DeletedCount} duplicados eliminados.", lines);
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            ShowActionResult(false, $"La limpieza falló: {ex.Message}");
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    // --- Cruce con muxojaleo.com (dos pasos) ---
+
+    private async Task OnCrossCheckClick()
+    {
+        if (_busy)
+            return;
+
+        if (!_crosscheckArmed)
+        {
+            _crosscheckArmed = true;
+            ShowActionResult(true,
+                "Se raspará el calendario de muxojaleo.com (3 meses), se guardarán sus eventos y el LLM " +
+                "cruzará los nuestros con los suyos. Pulsa otra vez el botón para confirmar.");
+            _ = DisarmAfterAsync(8000, () => _crosscheckArmed = false);
+            return;
+        }
+
+        _crosscheckArmed = false;
+        _busy = true;
+        ShowActionResult(true, "Raspando muxojaleo.com y analizando con el LLM…");
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var key = await GetDeepSeekKeyAsync(scope)
+                ?? throw new InvalidOperationException(
+                    "Configura la API key de DeepSeek en Ajustes antes de cruzar con muxojaleo.");
+            var sync = await scope.ServiceProvider.GetRequiredService<IMuxoSyncService>().SyncAsync(2);
+            var crosscheck = await scope.ServiceProvider.GetRequiredService<ICrossCheckService>().CrossCheckAsync(key);
+
+            var lines = new List<string>();
+            if (crosscheck.MatchesFound == 0)
+                lines.Add("El LLM no encontró coincidencias nuevas entre nuestros eventos y muxojaleo.");
+            foreach (var m in crosscheck.Matches)
+            {
+                var muxo = m.MuxoTitle ?? m.MuxoLink ?? "evento de muxojaleo";
+                lines.Add($"«{m.EventTitle ?? m.EventUniqueId}» ↔ «{muxo}»" +
+                          (m.Reason != null ? $" — {m.Reason}" : string.Empty));
+            }
+
+            ShowActionResult(true,
+                $"Cruce completado: {sync.MuxoEventsScraped} eventos de muxojaleo raspados " +
+                $"({sync.MuxoEventsNew} nuevos, {sync.MuxoEventsUpdated} actualizados), " +
+                $"{crosscheck.OurEventsAnalyzed} nuestros analizados, {crosscheck.MatchesFound} cruces nuevos.",
+                lines);
+            await LoadAsync();
+        }
+        catch (Exception ex)
+        {
+            ShowActionResult(false, $"El cruce falló: {ex.Message}");
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void ShowActionResult(bool ok, string title, List<string>? lines = null)
+    {
+        _actionOk = ok;
+        _actionTitle = title;
+        _actionLines = lines ?? new List<string>();
+    }
+
+    private async Task DisarmAfterAsync(int milliseconds, Action disarm)
+    {
+        await Task.Delay(milliseconds);
+        if (_busy)
+            return;
+        disarm();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private static async Task<string?> GetDeepSeekKeyAsync(IServiceScope scope)
+    {
+        var settings = scope.ServiceProvider.GetRequiredService<ISettingsService>();
+        return await settings.GetSecretAsync(SettingsKeys.DeepSeekApiKey);
+    }
+
+    private static string MonthLabel(string yyyyMm)
+    {
+        var parts = yyyyMm.Split('-');
+        var date = new DateTime(int.Parse(parts[0]), int.Parse(parts[1]), 1);
+        return date.ToString("MMMM 'de' yyyy", new CultureInfo("es-ES"));
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _jsRef?.Dispose();
+        if (OperatingSystem.IsBrowser())
+            return;
+        try
+        {
+            await Js.InvokeVoidAsync("calendarInterop.destroy");
+        }
+        catch
+        {
+            // circuito ya cerrado
+        }
+    }
+}

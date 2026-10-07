@@ -1,0 +1,101 @@
+@page "/deepseek"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@inject IServiceScopeFactory ScopeFactory
+
+<h1>Llamadas a DeepSeek</h1>
+<p class="muted">
+    Auditoría: una fila por intento HTTP al LLM. La API key nunca se guarda. El coste es una
+    estimación con los precios de deepseek-chat.
+</p>
+
+@if (_summary == null)
+{
+    <p class="muted">Cargando…</p>
+}
+else
+{
+    <div class="cards">
+        <div class="card">
+            <div class="card-value">@_summary.CallCount</div>
+            <div class="card-label">Intentos registrados</div>
+        </div>
+        <div class="card">
+            <div class="card-value">@(_summary.TotalTokens?.ToString("N0") ?? "—")</div>
+            <div class="card-label">Tokens totales</div>
+        </div>
+        <div class="card">
+            <div class="card-value">@_summary.EstimatedCostUsd.ToString("0.00") $</div>
+            <div class="card-label">Coste estimado</div>
+        </div>
+    </div>
+
+    @if (_rows.Count == 0)
+    {
+        <p class="muted">No hay llamadas registradas todavía.</p>
+    }
+    else
+    {
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Operación</th>
+                    <th>Inicio</th>
+                    <th>Duración</th>
+                    <th>Tokens</th>
+                    <th>HTTP</th>
+                    <th>Estado</th>
+                    <th>Error</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var log in _rows)
+                {
+                    <tr>
+                        <td>@OperationLabel(log.Operation)</td>
+                        <td>@log.StartedAtUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss")</td>
+                        <td>@((log.DurationMs / 1000.0).ToString("0.0")) s</td>
+                        <td>@log.TotalTokens.ToString("N0")</td>
+                        <td>@(log.HttpStatusCode?.ToString() ?? "—")</td>
+                        <td>
+                            @if (log.Succeeded)
+                            {
+                                <span class="badge badge-ok">ok</span>
+                            }
+                            else
+                            {
+                                <span class="badge badge-error">fallo</span>
+                            }
+                        </td>
+                        <td class="cell-summary">@(log.ErrorMessage ?? "—")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+}
+
+@code {
+    private List<DeepSeekLogRow> _rows = new();
+    private DeepSeekLogSummary? _summary;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var ui = scope.ServiceProvider.GetRequiredService<UiQueryService>();
+            (_rows, _summary) = await ui.GetDeepSeekLogsAsync();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private static string OperationLabel(string operation) => operation switch
+    {
+        "analyze_posts_filter" => "filtro is_event",
+        "analyze_posts_extract" => "extracción",
+        "cleanup_duplicates" => "limpieza duplicados",
+        "dedup_candidates" => "dedup candidatos",
+        "cross_match" => "cruce muxo",
+        _ => operation,
+    };
+}

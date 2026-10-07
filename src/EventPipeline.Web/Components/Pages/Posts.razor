@@ -1,0 +1,83 @@
+@page "/posts"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@inject IServiceScopeFactory ScopeFactory
+
+<h1>Posts</h1>
+<p class="muted">
+    Registro de posts analizados por el reconocimiento. Los posts ya analizados (eventos y
+    no-eventos) no vuelven a pasar por el LLM.
+</p>
+
+@if (_posts == null)
+{
+    <p class="muted">Cargando…</p>
+}
+else if (_posts.Count == 0)
+{
+    <p class="muted">No hay posts registrados todavía.</p>
+}
+else
+{
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Cuenta</th>
+                <th>Post</th>
+                <th>Caption</th>
+                <th>Fecha</th>
+                <th>Análisis</th>
+                <th>Evento</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var p in _posts)
+            {
+                <tr>
+                    <td>@p.Account</td>
+                    <td><a href="@p.Url" target="_blank" rel="noopener" title="@p.PostId">@p.PostId</a></td>
+                    <td class="cell-summary">@p.Caption</td>
+                    <td>@(p.PostDatetime?.ToLocalTime().ToString("dd/MM/yyyy HH:mm") ?? "—")</td>
+                    <td>
+                        @if (p.AnalyzedAtUtc == null)
+                        {
+                            <span class="badge badge-running">pendiente</span>
+                        }
+                        else if (p.IsEvent == true)
+                        {
+                            <span class="badge badge-ok" title="@p.AnalysisTitle">evento</span>
+                        }
+                        else
+                        {
+                            <span class="badge">no evento</span>
+                        }
+                    </td>
+                    <td>
+                        @if (p.EventUniqueId != null)
+                        {
+                            <a href="/eventos" title="Ver eventos">@p.EventUniqueId</a>
+                        }
+                        else
+                        {
+                            <text>—</text>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<PostRow>? _posts;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var ui = scope.ServiceProvider.GetRequiredService<UiQueryService>();
+            _posts = await ui.GetPostsAsync();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+}

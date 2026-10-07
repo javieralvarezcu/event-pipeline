@@ -1,0 +1,263 @@
+@page "/cuentas"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@inject IServiceScopeFactory ScopeFactory
+
+<h1>Cuentas de Instagram</h1>
+<p class="muted">
+    Perfiles que el job de scrape consulta en Bright Data (los primeros
+    @_postsPerAccount posts recientes de cada cuenta). Las deshabilitadas se ignoran.
+</p>
+
+<div class="action-group">
+    <button class="secondary" disabled="@_triggering" @onclick="TriggerScrapeAsync">
+        @(_triggering ? "Encolando…" : "Raspar ahora")
+    </button>
+    <button class="secondary" disabled="@_togglingAll" @onclick="() => SetAllAsync(true)">Habilitar todas</button>
+    <button class="secondary" disabled="@_togglingAll" @onclick="() => SetAllAsync(false)">Deshabilitar todas</button>
+    @if (_triggerMessage != null)
+    {
+        <span class="@(_triggerOk ? "ok-text" : "error-text")">@_triggerMessage</span>
+    }
+</div>
+
+@if (_accounts == null)
+{
+    <p class="muted">Cargando…</p>
+}
+else
+{
+    <form class="inline-form" @onsubmit="AddAccountAsync">
+        <input placeholder="usuario (p. ej. juevescong)" @bind="_newUsername" />
+        <input placeholder="https://www.instagram.com/usuario/" @bind="_newProfileUrl" />
+        <button type="submit" class="primary" disabled="@_saving">Añadir cuenta</button>
+        @if (_formError != null)
+        {
+            <span class="error-text">@_formError</span>
+        }
+    </form>
+
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Usuario</th>
+                <th>URL del perfil</th>
+                <th>Último scrape</th>
+                <th>Habilitada</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var account in _accounts)
+            {
+                <tr>
+                    <td>
+                        @if (_editingId == account.Id)
+                        {
+                            <input @bind="_editUsername" />
+                        }
+                        else
+                        {
+                            @account.Username
+                        }
+                    </td>
+                    <td>
+                        @if (_editingId == account.Id)
+                        {
+                            <input class="wide" @bind="_editProfileUrl" />
+                        }
+                        else
+                        {
+                            <a href="@account.ProfileUrl" target="_blank" rel="noopener">@account.ProfileUrl</a>
+                        }
+                    </td>
+                    <td>@(account.LastScrapedAtUtc?.ToLocalTime().ToString("dd/MM/yyyy HH:mm") ?? "nunca")</td>
+                    <td>
+                        <input type="checkbox" checked="@account.Enabled"
+                               @onchange="(e) => ToggleEnabledAsync(account.Id, (bool)e.Value!)" />
+                    </td>
+                    <td class="row-actions">
+                        @if (_editingId == account.Id)
+                        {
+                            <button class="primary" disabled="@_saving" @onclick="SaveEditAsync">Guardar</button>
+                            <button class="secondary" @onclick="CancelEdit">Cancelar</button>
+                        }
+                        else
+                        {
+                            <button class="secondary" @onclick="() => StartEdit(account)">Editar</button>
+                            <button class="danger @(_deleteArmedId == account.Id ? "confirm" : "")"
+                                    @onclick="() => DeleteAsync(account.Id)">
+                                @(_deleteArmedId == account.Id ? "¿Seguro?" : "Borrar")
+                            </button>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<IgAccount>? _accounts;
+    private int _postsPerAccount = 4;
+    private string _newUsername = string.Empty;
+    private string _newProfileUrl = string.Empty;
+    private string? _formError;
+    private bool _saving;
+    private int? _editingId;
+    private string _editUsername = string.Empty;
+    private string _editProfileUrl = string.Empty;
+    private int? _deleteArmedId;
+    private bool _triggering;
+    private bool _triggerOk;
+    private string? _triggerMessage;
+    private bool _togglingAll;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+            await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<IIgAccountService>();
+        var settings = scope.ServiceProvider.GetRequiredService<ISettingsService>();
+        _accounts = await service.GetAllAsync();
+        _postsPerAccount = int.Parse(
+            await settings.GetPlainAsync(SettingsKeys.IgPostsPerAccount) ?? "4");
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task AddAccountAsync()
+    {
+        _formError = null;
+        _saving = true;
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var service = scope.ServiceProvider.GetRequiredService<IIgAccountService>();
+            var (success, error) = await service.AddAsync(_newUsername.Trim(), _newProfileUrl.Trim());
+            if (!success)
+            {
+                _formError = error;
+                return;
+            }
+
+            _newUsername = string.Empty;
+            _newProfileUrl = string.Empty;
+            await LoadAsync();
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private void StartEdit(IgAccount account)
+    {
+        _editingId = account.Id;
+        _editUsername = account.Username;
+        _editProfileUrl = account.ProfileUrl;
+        _formError = null;
+    }
+
+    private void CancelEdit()
+    {
+        _editingId = null;
+        _formError = null;
+    }
+
+    private async Task SaveEditAsync()
+    {
+        _formError = null;
+        _saving = true;
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var service = scope.ServiceProvider.GetRequiredService<IIgAccountService>();
+            var (success, error) = await service.UpdateAsync(_editingId!.Value, _editUsername.Trim(), _editProfileUrl.Trim());
+            if (!success)
+            {
+                _formError = error;
+                return;
+            }
+
+            _editingId = null;
+            await LoadAsync();
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task ToggleEnabledAsync(int id, bool enabled)
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<IIgAccountService>();
+        await service.SetEnabledAsync(id, enabled);
+        await LoadAsync();
+    }
+
+    private async Task DeleteAsync(int id)
+    {
+        if (_deleteArmedId != id)
+        {
+            _deleteArmedId = id;
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(8000);
+                _deleteArmedId = null;
+                await InvokeAsync(StateHasChanged);
+            });
+            return;
+        }
+
+        _deleteArmedId = null;
+        using var scope = ScopeFactory.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<IIgAccountService>();
+        await service.DeleteAsync(id);
+        await LoadAsync();
+    }
+
+    private async Task SetAllAsync(bool enabled)
+    {
+        _togglingAll = true;
+        _formError = null;
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var service = scope.ServiceProvider.GetRequiredService<IIgAccountService>();
+            await service.SetAllEnabledAsync(enabled);
+            await LoadAsync();
+        }
+        finally
+        {
+            _togglingAll = false;
+        }
+    }
+
+    private async Task TriggerScrapeAsync()
+    {
+        _triggering = true;
+        _triggerMessage = null;
+        try
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var jobs = scope.ServiceProvider.GetRequiredService<JobsService>();
+            var error = jobs.TriggerNow("ig-scrape");
+            _triggerOk = error == null;
+            _triggerMessage = error ?? "Ejecución encolada. Sigue el progreso en Trabajos.";
+        }
+        catch (Exception ex)
+        {
+            _triggerOk = false;
+            _triggerMessage = ex.Message;
+        }
+        finally
+        {
+            _triggering = false;
+        }
+    }
+}

@@ -1,0 +1,25 @@
+@using System.Net.Http
+@using System.Globalization
+@using System.Text.Json
+@using Microsoft.AspNetCore.Antiforgery
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.AspNetCore.Components.Routing
+@using Microsoft.AspNetCore.Components.Web
+@using Microsoft.JSInterop
+@using EventPipeline.Web.Components
+@using EventPipeline.Web.Components.Calendar
+@using EventPipeline.Web.Components.Layout
+@using EventPipeline.Web.Components.Pages
+@using EventPipeline.Core.Contracts
+@using EventPipeline.Core.Entities
+@using EventPipeline.Web.Features.Auth
+@using EventPipeline.Core.Features.Events
+@using EventPipeline.Web.Features.IgAccounts
+@using EventPipeline.Web.Features.Jobs
+@using EventPipeline.Core.Features.Muxo
+@using EventPipeline.Web.Features.Settings
+@using EventPipeline.Web.Features.Ui
+
+@attribute [Authorize]

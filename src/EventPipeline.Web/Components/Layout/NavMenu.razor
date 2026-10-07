@@ -1,0 +1,17 @@
+@inject NavigationManager Navigation
+
+<nav class="sidebar">
+    <div class="brand">event pipeline for muxo jaleo</div>
+    <NavLink href="/" Match="NavLinkMatch.All" class="nav-link">Inicio</NavLink>
+    <NavLink href="/calendario" class="nav-link">Calendario</NavLink>
+    <NavLink href="/eventos" class="nav-link">Eventos</NavLink>
+    <NavLink href="/posts" class="nav-link">Posts</NavLink>
+    <NavLink href="/muxo" class="nav-link">Muxojaleo</NavLink>
+    <NavLink href="/cuentas" class="nav-link">Cuentas IG</NavLink>
+    <NavLink href="/trabajos" class="nav-link">Trabajos</NavLink>
+    <NavLink href="/deepseek" class="nav-link">DeepSeek</NavLink>
+    <NavLink href="/ajustes" class="nav-link">Ajustes</NavLink>
+    <form method="post" action="/auth/logout" class="nav-logout-form">
+        <button type="submit" class="nav-logout">Cerrar sesión</button>
+    </form>
+</nav>

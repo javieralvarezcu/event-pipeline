@@ -1,0 +1,17 @@
+[
+  {
+    "Name": "Web + API",
+    "Projects": [
+      {
+        "Path": "src\\EventPipeline.Web\\EventPipeline.Web.csproj",
+        "Action": "Start",
+        "DebugTarget": "http"
+      },
+      {
+        "Path": "src\\EventPipeline.Api\\EventPipeline.Api.csproj",
+        "Action": "Start",
+        "DebugTarget": "http"
+      }
+    ]
+  }
+]

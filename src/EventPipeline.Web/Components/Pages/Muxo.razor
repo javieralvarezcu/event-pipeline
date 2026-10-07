@@ -1,0 +1,80 @@
+@page "/muxo"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@inject IServiceScopeFactory ScopeFactory
+
+<h1>Eventos de muxojaleo.com</h1>
+<p class="muted">
+    Eventos raspados del calendario de muxojaleo.com. Los cruzados con un evento nuestro
+    aparecen en verde.
+</p>
+
+@if (_muxoEvents == null)
+{
+    <p class="muted">Cargando…</p>
+}
+else if (_muxoEvents.Count == 0)
+{
+    <p class="muted">
+        No hay eventos de muxojaleo guardados. Pulsa «Cruzar con muxojaleo» en el
+        <a href="/calendario">calendario</a> o ejecuta el job en <a href="/trabajos">Trabajos</a>.
+    </p>
+}
+else
+{
+    <p class="muted">@_muxoEvents.Count eventos.</p>
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Título</th>
+                <th>Fecha</th>
+                <th>Lugar</th>
+                <th>Categorías</th>
+                <th>Precio</th>
+                <th>Cruzado</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var m in _muxoEvents)
+            {
+                <tr class="@(m.IsCrossed ? "row-crossed" : null)">
+                    <td>
+                        @(string.IsNullOrEmpty(m.Title) ? "Sin título" : m.Title)
+                        @if (!string.IsNullOrEmpty(m.Link))
+                        {
+                            <a href="@m.Link" target="_blank" rel="noopener" title="Ver en muxojaleo.com">↗</a>
+                        }
+                    </td>
+                    <td>@(CalendarEventMapper.ToDateOnly(m.Date) is { } d ? CalendarEventMapper.FormatDateOnly(d) : "—")</td>
+                    <td>@(m.Venue ?? "—")</td>
+                    <td>@(m.Categories ?? "—")</td>
+                    <td>@(m.Price ?? "—")</td>
+                    <td>
+                        @if (m.IsCrossed)
+                        {
+                            <span class="badge badge-ok">cruzado</span>
+                        }
+                        else
+                        {
+                            <span class="badge">sin cruzar</span>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<MuxoEventDto>? _muxoEvents;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            using var scope = ScopeFactory.CreateScope();
+            var query = scope.ServiceProvider.GetRequiredService<IMuxoQueryService>();
+            _muxoEvents = await query.GetAllAsync();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+}

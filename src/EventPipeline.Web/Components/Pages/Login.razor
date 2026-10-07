@@ -1,0 +1,38 @@
+@page "/login"
+@attribute [AllowAnonymous]
+@inject IAntiforgery Antiforgery
+@inject IHttpContextAccessor HttpContextAccessor
+
+@* Página SSR estática: HttpContext y antiforgery disponibles sin circuito SignalR.
+   El GET lo sirve esta ruta; el POST lo captura AuthController (/auth/login). *@
+
+<div class="login-page">
+    <form method="post" action="/auth/login" class="login-form">
+        <h1>muxo jaleo</h1>
+        <p class="login-subtitle">Gestión de eventos</p>
+        <input type="hidden" name="__RequestVerificationToken" value="@RequestToken" />
+        <label>
+            Usuario
+            <input name="username" autocomplete="username" placeholder="admin" required />
+        </label>
+        <label>
+            Contraseña
+            <input type="password" name="password" autocomplete="current-password" required />
+        </label>
+        <button type="submit" class="primary">Entrar</button>
+        @if (Error)
+        {
+            <p class="error-text">Usuario o contraseña incorrectos.</p>
+        }
+    </form>
+</div>
+
+@code {
+    [SupplyParameterFromQuery(Name = "error")]
+    public string? ErrorQuery { get; set; }
+
+    private string RequestToken =>
+        Antiforgery.GetAndStoreTokens(HttpContextAccessor.HttpContext!).RequestToken ?? string.Empty;
+
+    private bool Error => ErrorQuery is not null;
+}

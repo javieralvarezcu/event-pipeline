@@ -1,0 +1,198 @@
+@page "/trabajos"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@inject IServiceScopeFactory ScopeFactory
+
+<h1>Trabajos</h1>
+<p class="muted">
+    Ejecuciones programadas de la app. Los cron se guardan en la base de datos (UTC, mismos
+    horarios que usaba n8n) y sobreviven a reinicios. «Ejecutar ahora» encola una ejecución manual.
+</p>
+
+@if (_definitions == null)
+{
+    <p class="muted">Cargando…</p>
+}
+else
+{
+    @foreach (var job in _definitions)
+    {
+        <div class="job-card">
+            <div class="job-header">
+                <h2>@job.DisplayName</h2>
+                @if (job.Enabled)
+                {
+                    <span class="badge badge-ok">programado</span>
+                }
+                else
+                {
+                    <span class="badge">desactivado</span>
+                }
+                @if (job.NextExecutionUtc != null && job.Enabled)
+                {
+                    <span class="muted">próxima: @job.NextExecutionUtc.Value.ToLocalTime().ToString("dd/MM/yyyy HH:mm")</span>
+                }
+            </div>
+            <p>@job.Description</p>
+
+            <div class="job-controls">
+                <input @bind="_crons[job.JobId]" placeholder="0 0 * * 2,5" />
+                <button class="primary" @onclick="() => SaveCronAsync(job.JobId)">Guardar cron</button>
+                <button class="secondary" @onclick="() => TriggerNowAsync(job.JobId)">Ejecutar ahora</button>
+                @if (job.Enabled)
+                {
+                    <button class="secondary" @onclick="() => SetEnabledAsync(job.JobId, false)">Desactivar</button>
+                }
+                else
+                {
+                    <button class="secondary" @onclick="() => SetEnabledAsync(job.JobId, true)">Activar</button>
+                }
+            </div>
+
+            @if (_messages.TryGetValue(job.JobId, out var message))
+            {
+                <p class="@(message.Ok ? "ok-text" : "error-text")">@message.Text</p>
+            }
+
+            @if (_lastRuns.TryGetValue(job.JobId, out var runs) && runs.Count > 0)
+            {
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Estado</th>
+                            <th>Disparo</th>
+                            <th>Inicio</th>
+                            <th>Fin</th>
+                            <th>Resumen / error</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var run in runs)
+                        {
+                            <tr>
+                                <td><span class="badge @StatusClass(run.Status)">@StatusLabel(run.Status)</span></td>
+                                <td>@(run.TriggerType == "manual" ? "manual" : "programado")</td>
+                                <td>@run.StartedAtUtc.ToLocalTime().ToString("dd/MM/yyyy HH:mm")</td>
+                                <td>@(run.CompletedAtUtc?.ToLocalTime().ToString("dd/MM/yyyy HH:mm") ?? "—")</td>
+                                <td class="cell-summary">
+                                    @if (run.Error != null)
+                                    {
+                                        <span class="error-text">@run.Error</span>
+                                    }
+                                    else
+                                    {
+                                        <span>@FormatSummary(run.SummaryJson)</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+            else
+            {
+                <p class="muted">Sin ejecuciones registradas.</p>
+            }
+        </div>
+    }
+}
+
+@code {
+    private List<JobDefinitionDto>? _definitions;
+    private readonly Dictionary<string, string> _crons = new();
+    private readonly Dictionary<string, (bool Ok, string Text)> _messages = new();
+    private readonly Dictionary<string, List<JobRun>> _lastRuns = new();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+            await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var jobs = scope.ServiceProvider.GetRequiredService<JobsService>();
+        var runs = scope.ServiceProvider.GetRequiredService<IJobRunService>();
+
+        _definitions = await jobs.GetJobDefinitionsAsync();
+        foreach (var job in _definitions)
+        {
+            if (!_crons.ContainsKey(job.JobId))
+                _crons[job.JobId] = job.Cron;
+            _lastRuns[job.JobId] = await runs.GetLatestAsync(5, job.JobId);
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task SaveCronAsync(string jobId)
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var jobs = scope.ServiceProvider.GetRequiredService<JobsService>();
+        var error = await jobs.SaveCronAsync(jobId, _crons[jobId]);
+        _messages[jobId] = error == null
+            ? (true, "Cron guardado.")
+            : (false, error);
+        await LoadAsync();
+    }
+
+    private async Task SetEnabledAsync(string jobId, bool enabled)
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var jobs = scope.ServiceProvider.GetRequiredService<JobsService>();
+        var error = await jobs.SetEnabledAsync(jobId, enabled);
+        _messages[jobId] = error == null
+            ? (true, enabled ? "Job activado." : "Job desactivado.")
+            : (false, error);
+        await LoadAsync();
+    }
+
+    private async Task TriggerNowAsync(string jobId)
+    {
+        using var scope = ScopeFactory.CreateScope();
+        var jobs = scope.ServiceProvider.GetRequiredService<JobsService>();
+        var error = jobs.TriggerNow(jobId);
+        _messages[jobId] = error == null
+            ? (true, "Ejecución encolada. Refresca en unos segundos para verla en el historial.")
+            : (false, error);
+        await LoadAsync();
+    }
+
+    private static string StatusClass(string status) => status switch
+    {
+        "Succeeded" => "badge-ok",
+        "Failed" => "badge-error",
+        _ => "badge-running",
+    };
+
+    private static string StatusLabel(string status) => status switch
+    {
+        "Succeeded" => "Correcto",
+        "Failed" => "Fallido",
+        _ => "En curso",
+    };
+
+    private static string FormatSummary(string? json)
+    {
+        if (string.IsNullOrEmpty(json))
+            return "—";
+
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            var pairs = new List<string>();
+            foreach (var property in document.RootElement.EnumerateObject())
+            {
+                if (property.Value.ValueKind == JsonValueKind.Object)
+                    continue; // p. ej. errores por cuenta: se muestra aparte
+                pairs.Add($"{property.Name}: {property.Value}");
+            }
+
+            return string.Join(" · ", pairs);
+        }
+        catch (JsonException)
+        {
+            return json;
+        }
+    }
+}
