@@ -15,7 +15,7 @@ legacy. Solución con tres proyectos:
 - **Entorno de desarrollo**: `docker compose -f docker-compose.dev.yml up -d` (SQL Server en 1434, BD `EventPipelineDb` creada por la Web en el primer arranque) + F5 en Visual Studio con el perfil "Web + API" del `EventPipeline.slnLaunch` (arranca y depura Web 5199 + Api 5200; en Desarrollo la Web reenvía `/api/*` y `/swagger*` a la Api local, como cloudflared en prod). Login `admin` / `dev-password-123` (si se olvida: borrar `dbo.AppUsers` en la BD dev y reiniciar la Web — ver README). Sin key de DeepSeek en Ajustes, los flujos con LLM fallan con mensaje claro (esperado).
 - Tests en `EventPipeline.Tests` (xUnit + SQLite in-memory, sin BD real; referencian Core + Api + Web). Antes de commitear: `dotnet test EventPipeline.sln`.
 - Migraciones EF: `dotnet ef migrations add <Name> --project src/EventPipeline.Core`. Las aplica la Web al arrancar (dev y prod); la Api no migra (evita competir en el arranque). Migraciones nuevas aditivas; los Ids de migración (nombres de clase) no se cambian una vez aplicadas a una BD real.
-- **Nunca commitear ni pushear por iniciativa propia**: solo cuando Javier lo pida explícitamente. Commits en inglés, lowercase imperativo, con `Co-Authored-By: Claude <noreply@anthropic.com>`; push directo a `main`.
+- **Nunca commitear ni pushear por iniciativa propia**: solo cuando Javier lo pida explícitamente. Commits en inglés, lowercase imperativo, **sin trailer de co-autoría** (Javier no quiere que Claude aparezca como colaborador: los commits van con su identidad local). Push directo a `main`.
 - El usuario habla español: explicaciones y resúmenes en español.
 
 ## Arquitectura (decisiones — no deshacer sin motivo)
