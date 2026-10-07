@@ -162,21 +162,18 @@ docker exec -it eventpipeline-dev-sql /opt/mssql-tools18/bin/sqlcmd \
 
 ## Despliegue
 
-1. **Desactivar los 4 workflows de n8n en producción** (`https://n8n.davru.link/`)
-   antes de desplegar: los jobs nuevos cubren 3 de ellos y duplicarían ejecuciones;
-   el de «publicar calendario» desaparece (el ICS se sirve on demand).
-2. Definir en el `.env` del servidor: `SA_PASSWORD` (contraseña del SQL Server del
+1. Definir en el `.env` del servidor: `SA_PASSWORD` (contraseña del SQL Server del
    compose), `INITIAL_ADMIN_PASSWORD` (y opcionalmente `ADMIN_USERNAME`) y
    `CLOUDFLARED_TUNNEL_TOKEN`. `docker compose up -d --build` arranca los cuatro
    servicios: `sqlserver` (BD propia, volumen persistente), `web` (UI + Hangfire;
    crea y migra la BD al arrancar), `api` (REST) y `cloudflared`.
-3. **Configurar el enrutado por path en el túnel cloudflared** (dashboard de
+2. **Configurar el enrutado por path en el túnel cloudflared** (dashboard de
    Cloudflare): `/` y el resto → `web` (puerto 8083); `/api/*` y `/swagger*` →
    `api` (puerto 8082). Así la UI y el enlace ICS relativo `/api/calendar/ics`
    funcionan en el mismo dominio.
-4. Primer login → cambiar la contraseña → configurar en **Ajustes** la API key de
+3. Primer login → cambiar la contraseña → configurar en **Ajustes** la API key de
    DeepSeek y el token de Bright Data (se recuperan de las credenciales que tenía n8n).
-5. Verificar en **Trabajos** los próximos disparos de los 3 jobs.
+4. Verificar en **Trabajos** los próximos disparos de los 3 jobs.
 
 Notas:
 - **Una sola réplica** de los contenedores: Hangfire y los semáforos del LLM
