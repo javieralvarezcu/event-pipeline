@@ -1,9 +1,8 @@
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
-COPY src/EventPipeline.Web/EventPipeline.Web.csproj src/EventPipeline.Web/
-COPY src/EventPipeline.Core/EventPipeline.Core.csproj src/EventPipeline.Core/
-RUN dotnet restore src/EventPipeline.Web/EventPipeline.Web.csproj
-COPY src/ ./
+# Un único COPY del árbol de fuentes en /src/src (copiar a ./ colocaría los
+# proyectos directamente en el WORKDIR y las rutas del publish no cuadrarían).
+COPY src/ ./src/
 RUN dotnet publish src/EventPipeline.Web/EventPipeline.Web.csproj -c Release -o /app/publish
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
