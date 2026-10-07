@@ -1,0 +1,10 @@
+# El contexto de build de Docker no debe arrastrar basura local:
+# bin/obj de compilaciones previas (sobre todo si se ha compilado en la
+# máquina antes del docker build) rompen el publish dentro del contenedor.
+**/bin/
+**/obj/
+.vs/
+.git/
+tests/
+.env
+*.user
