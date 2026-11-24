@@ -20,7 +20,7 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// --- Database (own dedicated EventPipelineDb, served by the compose SQL Server) ---
+// --- Database (own dedicated SQLite file, shared by the Web and the Api) ---
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
     ?? Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection")
     ?? throw new InvalidOperationException(
@@ -28,14 +28,14 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
         "or add a ConnectionStrings.DefaultConnection entry in appsettings.Development.json.");
 
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlServer(connectionString));
+    options.UseSqlite(connectionString));
 
 // Factory used by the audit logger, the post registry, the UI query services and
 // the job activity hub to write/read on their own contexts, without touching the
 // request-scoped context. Scoped: the hub (singleton) resolves it through its own
 // scope per call.
 builder.Services.AddDbContextFactory<AppDbContext>(options =>
-    options.UseSqlServer(connectionString), ServiceLifetime.Scoped);
+    options.UseSqlite(connectionString), ServiceLifetime.Scoped);
 
 // --- Data Protection: key ring persisted in the shared DB (survives container
 // recreation) so the encrypted AppSettings secrets stay readable ---
@@ -44,19 +44,15 @@ builder.Services.AddDataProtection()
     .PersistKeysToDbContext<AppDbContext>();
 
 // --- Hangfire (scheduler runs in this same process) ---
-// Schema "HangFire" is its own SQL Server schema, created idempotently at startup
-// (PrepareSchemaIfNecessary).
+// In-memory storage: the recurring jobs are re-registered at every startup from
+// AppSettings (JobsService.EnsureRecurringJobsAsync) and the run history lives in
+// our own JobRuns/JobRunLogs tables, so Hangfire has nothing worth persisting.
+// A run missed while the container is down is skipped until the next cron.
 builder.Services.AddHangfire(config => config
     .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
     .UseSimpleAssemblyNameTypeSerializer()
     .UseRecommendedSerializerSettings()
-    .UseSqlServerStorage(connectionString, new Hangfire.SqlServer.SqlServerStorageOptions
-    {
-        SchemaName = "HangFire",
-        PrepareSchemaIfNecessary = true,
-        EnableHeavyMigrations = false,
-        QueuePollInterval = TimeSpan.FromSeconds(15),
-    }));
+    .UseInMemoryStorage());
 builder.Services.AddHangfireServer(options =>
 {
     options.WorkerCount = 2;
@@ -150,6 +146,9 @@ if (builder.Configuration.GetValue<bool>("Database:MigrateOnStartup"))
     using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.Migrate();
+    // WAL lets the Api read while the Web writes (both processes open the same
+    // SQLite file). The mode is stored in the file, so setting it once is enough.
+    db.Database.ExecuteSqlRaw("PRAGMA journal_mode=WAL;");
 }
 
 // Solo en Desarrollo: /api/* y /swagger* se reenvían a la Api local (5200),

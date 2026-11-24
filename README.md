@@ -1,6 +1,6 @@
 # Event Pipeline — agenda de muxo jaleo
 
-Aplicación web integral (.NET 8 + EF Core + SQL Server) para la agenda de
+Aplicación web integral (.NET 8 + EF Core + SQLite) para la agenda de
 [muxojaleo.com](https://muxojaleo.com): reconoce carteles de Instagram con DeepSeek,
 raspa y cruza eventos con muxojaleo.com y sirve el calendario en ICS. **Todo se
 gestiona desde una web UI propia** (Blazor Server): sin n8n, sin Nextcloud, sin emails.
@@ -53,7 +53,7 @@ y es quien orquesta todo:
 ```
 EventPipeline.Web (un contenedor)
  ├─ Páginas: Calendario · Eventos · Posts · Muxojaleo · Cuentas IG · Trabajos · DeepSeek · Ajustes
- └─ Jobs Hangfire (mismo proceso, SQL Server)
+ └─ Jobs Hangfire (mismo proceso, almacenamiento en memoria)
      ├─ ig-scrape             Bright Data → reconocimiento
      ├─ muxo-sync-crosscheck  scrape muxojaleo.com → cruce LLM
      └─ monthly-cleanup       limpieza de duplicados del mes anterior
@@ -79,11 +79,19 @@ Los crons se editan en la página **Trabajos** y se guardan en la tabla `AppSett
 
 ## Base de datos (propia y dedicada)
 
-La app usa su **propia base de datos** (`EventPipelineDb`) en un SQL Server del
-docker-compose, sin relación con el proyecto legacy. El esquema lo crean y mantienen
-las migraciones EF: la Web las aplica al arrancar (`Database:MigrateOnStartup=true`,
-también en producción — es BD propia, sin conflictos; la Api no migra para no competir
-en el arranque). Hangfire usa su schema `HangFire` dentro de la misma BD.
+La app usa su **propia base de datos**: un fichero SQLite (`/data/eventpipeline.db`
+en producción, en el volumen `data` que comparten `web` y `api`), sin relación con el
+proyecto legacy. Va en modo WAL, así la Api lee mientras la Web escribe. El esquema lo
+crean y mantienen las migraciones EF: la Web las aplica al arrancar
+(`Database:MigrateOnStartup=true`, también en producción — es BD propia, sin
+conflictos; la Api no migra para no competir en el arranque).
+
+Hangfire usa almacenamiento **en memoria**: los crons se registran en cada arranque
+desde `AppSettings` y el historial vive en `JobRuns`/`JobRunLogs`. Un disparo que caiga
+con el contenedor parado no se recupera; espera al siguiente.
+
+Hasta el 24-11-2026 la BD era un SQL Server Express. Para copiar sus datos a SQLite
+está `tools/EventPipeline.SqlServerToSqlite` (ver el comentario de su `Program.cs`).
 
 Las 11 tablas (`EventRecords`, `MuxoEvents`, `CrossMatches`, `Posts`,
 `DeepSeekCallLogs`, `IgAccounts`, `AppUsers`, `AppSettings`, `JobRuns`,
@@ -94,7 +102,7 @@ concurrencia del dedup) están cubiertos por `SchemaGuardTests`.
 
 | Variable | Necesaria | Uso |
 | --- | --- | --- |
-| `ConnectionStrings__DefaultConnection` | sí | SQL Server del docker-compose (BD propia `EventPipelineDb`) |
+| `ConnectionStrings__DefaultConnection` | sí | Fichero SQLite, p. ej. `Data Source=/data/eventpipeline.db` |
 | `Auth__AdminUsername` | no (default `admin`) | Usuario administrador de la UI, sembrado en el primer arranque |
 | `Auth__InitialAdminPassword` | dev: no / prod: sí | Contraseña inicial (se fuerza el cambio en el primer login; en dev, si falta, se genera y se loguea una vez) |
 | `Database__MigrateOnStartup` | no (default `false`) | `true` en la Web (dev y prod): crea y migra la BD propia. La Api nunca migra |
@@ -102,16 +110,14 @@ concurrencia del dedup) están cubiertos por `SchemaGuardTests`.
 El resto (API key de DeepSeek, token de Bright Data, URL/dataset de Bright Data, posts
 por cuenta, crons) se configura **desde la página Ajustes** y queda cifrado en la BD.
 
-## Desarrollo (con Docker + Visual Studio)
+## Desarrollo (con Visual Studio)
 
-La única dependencia externa es SQL Server, que se levanta en Docker. Los dos
-proyectos se ejecutan y **depuran con F5 desde Visual Studio** contra ese contenedor.
+No hay dependencias externas: la BD de desarrollo es el fichero SQLite
+`eventpipeline-dev.db` en la raíz del repo (ignorado por git), compartido por los dos
+proyectos, que se ejecutan y **depuran con F5 desde Visual Studio**.
 
 ```bash
-# 1. Levantar SQL Server de desarrollo (puerto 1434, datos persistentes en volumen)
-docker compose -f docker-compose.dev.yml up -d
-
-# 2. Abrir EventPipeline.sln en Visual Studio y pulsar F5 con el perfil
+# Abrir EventPipeline.sln en Visual Studio y pulsar F5 con el perfil
 #    "Web + API" del desplegable junto al botón de inicio (definido en el
 #    EventPipeline.slnLaunch compartido del repo): arranca y depura los dos
 #    proyectos a la vez — Web en http://localhost:5199 (login) y Api en
@@ -120,18 +126,15 @@ docker compose -f docker-compose.dev.yml up -d
 #    enlaces relativos (p. ej. el ICS) funcionan igual que en producción.
 ```
 
-El primer arranque de la Web lo deja todo listo él solo: crea la BD `EventPipelineDb`
-en el contenedor, aplica las migraciones EF (todo el esquema), crea el schema de
-Hangfire y siembra datos de prueba:
+El primer arranque de la Web lo deja todo listo él solo: crea el fichero de la BD,
+aplica las migraciones EF (todo el esquema) y siembra datos de prueba:
 
 - **Login:** `admin` / `dev-password-123` (se fuerza el cambio en el primer login).
 - **¿Se te ha olvidado la contraseña del admin en dev?** Borra el usuario de la BD de
   desarrollo y reinicia la Web (el seed lo recrea):
 
   ```bash
-  docker exec -it eventpipeline-dev-sql /opt/mssql-tools18/bin/sqlcmd \
-    -S localhost -U sa -P Your_password123 -C -d EventPipelineDb \
-    -Q "DELETE FROM dbo.AppUsers;"
+  sqlite3 eventpipeline-dev.db "DELETE FROM AppUsers;"
   ```
 
 - **Datos sembrados:** las 34 cuentas de Instagram, ajustes por defecto (crons, Bright Data).
@@ -151,25 +154,21 @@ dotnet run --project src/EventPipeline.Api  # solo la API REST (puerto 5200)
 dotnet ef migrations add <Nombre> --project src/EventPipeline.Core
 ```
 
-Para reiniciar la BD de desarrollo desde cero: `docker compose -f docker-compose.dev.yml down -v` y
-vuelve a levantarla (el volumen se borra y el primer arranque la recrea).
-Health check en `/healthz` (Api). El SQL de la BD dev se inspecciona con:
-
-```bash
-docker exec -it eventpipeline-dev-sql /opt/mssql-tools18/bin/sqlcmd \
-  -S localhost -U sa -P Your_password123 -C -d EventPipelineDb
-```
+Para reiniciar la BD de desarrollo desde cero: para la Web y la Api y borra
+`eventpipeline-dev.db*` (el primer arranque la recrea). Health check en `/healthz`
+(Api). La BD dev se inspecciona con `sqlite3 eventpipeline-dev.db`.
 
 ## Despliegue
 
-1. Definir en el `.env` del servidor: `SA_PASSWORD` (contraseña del SQL Server del
-   compose), `INITIAL_ADMIN_PASSWORD` (y opcionalmente `ADMIN_USERNAME`) y
-   `CLOUDFLARED_TUNNEL_TOKEN`. `docker compose up -d --build` arranca los cuatro
-   servicios: `sqlserver` (BD propia, volumen persistente), `web` (UI + Hangfire;
-   crea y migra la BD al arrancar), `api` (REST) y `cloudflared`.
+1. Definir en el `.env` del servidor: `INITIAL_ADMIN_PASSWORD` (y opcionalmente
+   `ADMIN_USERNAME`) y `TUNNEL_TOKEN`. `docker compose up -d --build` arranca los tres
+   servicios: `web` (UI + Hangfire; crea y migra la BD al arrancar), `api` (REST) y
+   `cloudflared`. La BD vive en el volumen `data`. Para copiarla en caliente usa la API
+   de backup de SQLite (`sqlite3 eventpipeline.db ".backup copia.db"`), no copies el
+   fichero sin más.
 2. **Configurar el enrutado por path en el túnel cloudflared** (dashboard de
-   Cloudflare): `/` y el resto → `web` (puerto 8083); `/api/*` y `/swagger*` →
-   `api` (puerto 8082). Así la UI y el enlace ICS relativo `/api/calendar/ics`
+   Cloudflare): `/` y el resto → `http://web:8080`; `/api/*` y `/swagger*` →
+   `http://api:8080`. Así la UI y el enlace ICS relativo `/api/calendar/ics`
    funcionan en el mismo dominio.
 3. Primer login → cambiar la contraseña → configurar en **Ajustes** la API key de
    DeepSeek y el token de Bright Data (se recuperan de las credenciales que tenía n8n).

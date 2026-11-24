@@ -3,3 +3,8 @@ obj/
 .vs/
 *.user
 .env
+
+# SQLite (dev and design-time)
+*.db
+*.db-shm
+*.db-wal

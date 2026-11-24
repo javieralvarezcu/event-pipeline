@@ -9,7 +9,7 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// --- Database (own dedicated EventPipelineDb, served by the compose SQL Server) ---
+// --- Database (own dedicated SQLite file, shared by the Web and the Api) ---
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
     ?? Environment.GetEnvironmentVariable("ConnectionStrings__DefaultConnection")
     ?? throw new InvalidOperationException(
@@ -17,12 +17,12 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
         "or add a ConnectionStrings.DefaultConnection entry in appsettings.Development.json.");
 
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlServer(connectionString));
+    options.UseSqlite(connectionString));
 
 // Factory used by the audit logger and the post registry to write on their own
 // contexts, without touching the request-scoped context's pending changes.
 builder.Services.AddDbContextFactory<AppDbContext>(options =>
-    options.UseSqlServer(connectionString), ServiceLifetime.Scoped);
+    options.UseSqlite(connectionString), ServiceLifetime.Scoped);
 
 // --- HTTP clients ---
 builder.Services.AddHttpClient("DeepSeek", client =>

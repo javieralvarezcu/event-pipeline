@@ -12,7 +12,7 @@ public class AppDbContextFactory : IDesignTimeDbContextFactory<AppDbContext>
     public AppDbContext CreateDbContext(string[] args)
     {
         var optionsBuilder = new DbContextOptionsBuilder<AppDbContext>();
-        optionsBuilder.UseSqlServer("Server=localhost;Database=EventRecognizerDb;TrustServerCertificate=true");
+        optionsBuilder.UseSqlite("Data Source=eventpipeline-design.db");
         return new AppDbContext(optionsBuilder.Options);
     }
 }

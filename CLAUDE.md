@@ -1,9 +1,9 @@
 # Event Pipeline
 
-Web app integral de la agenda de muxo jaleo (.NET 8 + EF Core + SQL Server): reconocimiento de
+Web app integral de la agenda de muxo jaleo (.NET 8 + EF Core + SQLite): reconocimiento de
 carteles de Instagram vía DeepSeek, scrape de Instagram vía Bright Data, cruce con muxojaleo.com,
 calendario ICS y limpieza de duplicados. **La propia app orquesta y programa todo** (sin n8n, sin
-Nextcloud, sin emails). **BD propia y dedicada** (`EventPipelineDb`), sin relación con el proyecto
+Nextcloud, sin emails). **BD propia y dedicada** (fichero SQLite), sin relación con el proyecto
 legacy. Solución con tres proyectos:
 
 - `src/EventPipeline.Core` — librería de dominio: entidades, DbContext, migraciones, servicios (reconocimiento, muxo, eventos, ICS, DeepSeek), barrera `X-DeepSeek-API-Key`.
@@ -12,7 +12,7 @@ legacy. Solución con tres proyectos:
 
 ## Cómo trabajar en este repo
 
-- **Entorno de desarrollo**: `docker compose -f docker-compose.dev.yml up -d` (SQL Server en 1434, BD `EventPipelineDb` creada por la Web en el primer arranque) + F5 en Visual Studio con el perfil "Web + API" del `EventPipeline.slnLaunch` (arranca y depura Web 5199 + Api 5200; en Desarrollo la Web reenvía `/api/*` y `/swagger*` a la Api local, como cloudflared en prod). Login `admin` / `dev-password-123` (si se olvida: borrar `dbo.AppUsers` en la BD dev y reiniciar la Web — ver README). Sin key de DeepSeek en Ajustes, los flujos con LLM fallan con mensaje claro (esperado).
+- **Entorno de desarrollo**: sin dependencias externas. La BD es el fichero SQLite `eventpipeline-dev.db` en la raíz del repo (ignorado por git), creado y migrado por la Web en el primer arranque. F5 en Visual Studio con el perfil "Web + API" del `EventPipeline.slnLaunch` (arranca y depura Web 5199 + Api 5200; en Desarrollo la Web reenvía `/api/*` y `/swagger*` a la Api local, como cloudflared en prod). Login `admin` / `dev-password-123` (si se olvida: borrar `AppUsers` en la BD dev y reiniciar la Web — ver README). Sin key de DeepSeek en Ajustes, los flujos con LLM fallan con mensaje claro (esperado).
 - Tests en `EventPipeline.Tests` (xUnit + SQLite in-memory, sin BD real; referencian Core + Api + Web). Antes de commitear: `dotnet test EventPipeline.sln`.
 - Migraciones EF: `dotnet ef migrations add <Name> --project src/EventPipeline.Core`. Las aplica la Web al arrancar (dev y prod); la Api no migra (evita competir en el arranque). Migraciones nuevas aditivas; los Ids de migración (nombres de clase) no se cambian una vez aplicadas a una BD real.
 - **Nunca commitear ni pushear por iniciativa propia**: solo cuando Javier lo pida explícitamente. Commits en inglés, lowercase imperativo, **sin trailer de co-autoría** (Javier no quiere que Claude aparezca como colaborador: los commits van con su identidad local). Push directo a `main`.
@@ -32,18 +32,18 @@ legacy. Solución con tres proyectos:
 - **Análisis dos fases**: filtro barato `is_event` (60/chunk) + extracción solo para eventos (20/chunk; 30 desbordaba los 4096 tokens de salida y las respuestas truncadas se facturan igual). Split-and-retry si un chunk agota intentos.
 - **Fechas del LLM**: `event_date` es SOLO `YYYY-MM-DD`, sin hora ni zona horaria; la hora del cartel va aparte en `event_time` ("HH:mm", solo si el cartel la dice explícitamente) y se combina en `RecognitionService.CombineDateAndTime`. **Prohibido** reintroducir horas en `event_date` o convertir fechas: `ParseEventDate` NO debe llamar a `ToUniversalTime()` (desplazaba un día los eventos, p. ej. "12 de octubre" → 11). Las fechas son granularidad de DÍA, guardadas tal cual.
 - **Auditoría `DeepSeekCallLogs`**: una fila por intento HTTP al LLM; la API key nunca se guarda.
-- **Esquema de la BD** (`SchemaGuardTests`): las 10 tablas y los índices únicos guardianes de concurrencia (dedup de posts/eventos/cruces) viven solo en el modelo EF — nadie más escribe en la BD. Migraciones EF (Baseline + AddWebAppTables) son la única fuente del esquema.
-- **Hangfire schema `HangFire`**: `PrepareSchemaIfNecessary=true` al arrancar — crea idempotentemente solo sus tablas dentro del schema `HangFire`.
-- **Data Protection en BD**: el anillo de claves sobrevive a recrear los contenedores (el anillo y el volumen SQL son persistentes). Si se restaura un backup antiguo de la BD, los secretos cifrados quedan ilegibles → reintroducirlos en Ajustes. En Linux el anillo reposa sin cifrar (mismo nivel de confianza que la BD).
+- **Esquema de la BD** (`SchemaGuardTests`): las 11 tablas y los índices únicos guardianes de concurrencia (dedup de posts/eventos/cruces) viven solo en el modelo EF — nadie más escribe en la BD. Las migraciones EF (`SqliteBaseline` y las que vengan) son la única fuente del esquema.
+- **SQLite compartido por dos procesos**: Web y Api abren el mismo fichero (`/data/eventpipeline.db`, volumen `data`). La Web pone `journal_mode=WAL` al arrancar, así las lecturas no bloquean las escrituras. Si hiciera falta un motor de servidor, PostgreSQL es el siguiente paso (no volver a SQL Server: consumía unos 700 MB de RAM). **Hangfire en memoria** (`Hangfire.InMemory`): los crons se registran en cada arranque desde AppSettings y el historial está en `JobRuns`, así que no hay nada que persistir; un disparo que caiga con el contenedor parado se pierde.
+- **Data Protection en BD**: el anillo de claves sobrevive a recrear los contenedores (el anillo y el volumen `data` son persistentes). Si se restaura un backup antiguo de la BD, los secretos cifrados quedan ilegibles → reintroducirlos en Ajustes. En Linux el anillo reposa sin cifrar (mismo nivel de confianza que la BD).
 
-## Tablas (BD propia `EventPipelineDb`)
+## Tablas (BD propia, SQLite)
 
-- **Todas propias de esta app** (migraciones `20260927203458_Baseline`, `20260927233939_AddWebAppTables` y `AddJobRunLogs`): `EventRecords`, `MuxoEvents`, `CrossMatches`, `Posts`, `DeepSeekCallLogs`, `IgAccounts`, `AppUsers`, `AppSettings`, `JobRuns`, `JobRunLogs`, `DataProtectionKeys`.
-- **Hangfire**: schema `HangFire` (tablas de Hangfire, fuera del modelo EF).
+- **Todas propias de esta app** (migración `SqliteBaseline`, del 24-11-2026; las de SQL Server se borraron al cambiar de motor): `EventRecords`, `MuxoEvents`, `CrossMatches`, `Posts`, `DeepSeekCallLogs`, `IgAccounts`, `AppUsers`, `AppSettings`, `JobRuns`, `JobRunLogs`, `DataProtectionKeys`.
+- **Migración desde SQL Server**: `tools/EventPipeline.SqlServerToSqlite` copia todas las tablas EF conservando los Ids (la de Hangfire no). Se usó una vez el 24-11-2026; queda por si hay que repetirla.
 
 ## Despliegue
 
-- Docker + cloudflared (docker-compose: servicios `sqlserver`, `web`, `api`, `cloudflared`). `.env` de prod con `SA_PASSWORD`, `INITIAL_ADMIN_PASSWORD` (contraseña inicial del admin, se fuerza cambio en el primer login) y `CLOUDFLARED_TUNNEL_TOKEN`. La Web crea y migra la BD al arrancar.
-- **Enrutado cloudflared por path** (dashboard de Cloudflare): `/` → web (8083); `/api/*` y `/swagger*` → api (8082). El enlace ICS relativo depende de esto.
+- Docker + cloudflared (docker-compose: servicios `web`, `api`, `cloudflared`; volumen `data` con la BD). `.env` de prod con `INITIAL_ADMIN_PASSWORD` (contraseña inicial del admin, se fuerza cambio en el primer login) y `TUNNEL_TOKEN`. La Web crea y migra la BD al arrancar. Copias en caliente con la API de backup de SQLite, nunca copiando el fichero a pelo.
+- **Enrutado cloudflared por path** (dashboard de Cloudflare): `/` → `http://web:8080`; `/api/*` y `/swagger*` → `http://api:8080`. El enlace ICS relativo depende de esto.
 - **Antes de desplegar: desactivar los 4 workflows n8n de producción** (`https://n8n.davru.link/`) — duplicarían los 3 jobs nuevos.
 - Tras el primer login: configurar key DeepSeek y token Bright Data en Ajustes (estaban en las credenciales de n8n).

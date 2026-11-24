@@ -15,7 +15,7 @@ public class SchemaGuardTests
     private static IModel BuildModel()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseSqlServer("Server=localhost;Database=schema-check;TrustServerCertificate=true")
+            .UseSqlite("Data Source=:memory:")
             .Options;
         using var db = new AppDbContext(options);
         return db.Model;
